@@ -78,6 +78,11 @@ button:focus-visible,input:focus-visible{outline:4px solid var(--lid);outline-of
 .list div{display:flex;flex-wrap:wrap;gap:4px 16px;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--line);font-size:22px}
 .list div b{color:var(--accent)}
 .status{font-size:18px;color:var(--muted)}
+.streak{font-size:26px;font-weight:700}
+.streak small{display:block;font-size:19px;font-weight:400;color:var(--muted)}
+.sum{display:flex;flex-direction:column;gap:10px;font-size:24px}
+.sum div{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.sum b{font-size:28px;color:var(--accent);font-variant-numeric:tabular-nums}
 /* занятие: компактно, чтобы всё помещалось над клавиатурой */
 body.studying{padding-block:6px 14px}
 #study>.wrap{gap:8px}
@@ -127,6 +132,7 @@ body.studying{padding-block:6px 14px}
       </div>
       <div class="card">
         <h2 id="planTitle">Сегодня</h2>
+        <p class="streak" id="streak" hidden></p>
         <p id="plan"></p>
         <div class="row">
           <button class="btn" id="start">Начать</button>
@@ -182,7 +188,9 @@ body.studying{padding-block:6px 14px}
 
       <div class="card" id="done" hidden>
         <h1>На сегодня всё. ¡Muy bien!</h1>
-        <p id="doneText"></p>
+        <p class="streak" id="doneStreak"></p>
+        <div class="sum" id="doneSum"></div>
+        <p id="doneText" class="muted"></p>
         <div class="row">
           <button class="btn" id="toHome">К банкам</button>
         </div>
@@ -216,7 +224,8 @@ let who = null, P = null, db = null, dict = null, tts = null, cloud = false;
 let queue = [], seen = new Set(), total = 0, cur = null, lastOk = false, lastFirst = true, lastBox = 1, lastW = null, stats = {ok:0, bad:0};
 
 const today = () => { const d = new Date(); return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 864e5); };
-const blank = () => ({w:{}, d:0, nt:[], t:0});
+const blank = () => ({w:{}, d:0, nt:[], t:0, s:[0,0,0], y:[0,0,0]});
+/* s = [последний день занятий, дней подряд, рекорд]; y = [день, слов вспомнили, из них новых] */
 const lsKey = k => "banki:" + k;
 function lsGet(k){ try { return JSON.parse(localStorage.getItem(lsKey(k))) } catch(e){ return null } }
 function lsSet(k, v){ try { localStorage.setItem(lsKey(k), JSON.stringify(v)) } catch(e){} }
@@ -228,8 +237,8 @@ let tgName = "";
 cloud = !!CS;
 const csSet = (k, v) => new Promise((res, rej) => CS.setItem(k, v, e => e ? rej(e) : res()));
 const csGet = keys => new Promise((res, rej) => CS.getItems(keys, (e, v) => e ? rej(e) : res(v || {})));
-const pack = p => JSON.stringify({d:p.d, nt:p.nt, t:p.t, w:Object.entries(p.w).map(([k, v]) => k + "." + v[0] + "." + v[1]).join(",")});
-function unpack(s){ const o = JSON.parse(s), w = {}; (o.w || "").split(",").forEach(x => { const a = x.split("."); if (a.length === 3) w[a[0]] = [+a[1], +a[2]]; }); return {w, d:o.d || 0, nt:o.nt || [], t:o.t || 0}; }
+const pack = p => JSON.stringify({d:p.d, nt:p.nt, t:p.t, s:p.s, y:p.y, w:Object.entries(p.w).map(([k, v]) => k + "." + v[0] + "." + v[1]).join(",")});
+function unpack(s){ const o = JSON.parse(s), w = {}; (o.w || "").split(",").forEach(x => { const a = x.split("."); if (a.length === 3) w[a[0]] = [+a[1], +a[2]]; }); return {w, d:o.d || 0, nt:o.nt || [], t:o.t || 0, s:o.s || [0,0,0], y:o.y || [0,0,0]}; }
 let saveTimer = null, saving = false, dirty = false;
 function save(){
   P.t = Date.now(); lsSet(who, P);
@@ -286,6 +295,14 @@ function ensureDay(){
 function pendingNew(){ return P.d === today() ? P.nt.filter(id => !P.w[id] && BY[id]) : null; }
 function plural(n, a, b, c){ const m = n % 100, k = n % 10; return (m > 10 && m < 20) ? c : k === 1 ? a : (k > 1 && k < 5) ? b : c; }
 const wordsN = n => n + " " + plural(n, "слово", "слова", "слов");
+const daysN = n => n + " " + plural(n, "день", "дня", "дней");
+function streakNow(){ const s = P.s || [0,0,0]; return s[0] >= today() - 1 ? s[1] : 0; }
+function markDay(){
+  const t = today(), s = P.s = (P.s || [0,0,0]).slice();
+  if (s[0] !== t) { s[1] = s[0] === t - 1 ? s[1] + 1 : 1; s[0] = t; s[2] = Math.max(s[2] || 0, s[1]); }
+  if (!P.y || P.y[0] !== t) P.y = [t, 0, 0];
+}
+function countDay(wasNew){ markDay(); P.y = P.y.slice(); P.y[1]++; if (wasNew) P.y[2]++; }
 
 function show(id){
   ["pick","home","study","list"].forEach(s => $(s).hidden = s !== id);
@@ -325,6 +342,9 @@ function render(){
     txt = (rev ? "Повторить: " + wordsN(rev) + ". " : "") + (nw ? "Новых: " + wordsN(nw) + "." : "");
   }
   $("plan").textContent = txt;
+  const sn = streakNow(), doneToday = P.s && P.s[0] === today();
+  $("streak").hidden = !sn;
+  if (sn) $("streak").innerHTML = "🔥 " + daysN(sn) + " подряд<small>" + (doneToday ? "Сегодня вы уже занимались." : "Позанимайтесь сегодня, чтобы не прервать серию.") + "</small>";
   $("start").hidden = rev + nw === 0;
   $("more").hidden = !(pn !== null && c[1] - pn.length > 0);
   showStatus(); show("home");
@@ -402,9 +422,10 @@ function apply(ok){
   seen.add(id); lastOk = ok; lastFirst = first; lastBox = box; lastW = P.w[id] ? P.w[id].slice() : null; queue.shift();
   if (ok) {
     stats.ok++;
+    countDay(box === 1);
     promote(id, box, first, t);
   } else {
-    stats.bad++;
+    stats.bad++; markDay();
     // ошибка: на две банки вниз (не ниже второй), повтор завтра
     if (box > 1 && first) P.w[id] = [Math.max(2, box - 2), t + 1];
     queue.push(id);
@@ -441,7 +462,7 @@ function reveal(r, raw, gaveUp){
 function overrideOk(){
   if (lastOk) return;
   const id = cur.i, t = today();
-  queue.pop(); stats.bad--; stats.ok++; lastOk = true;
+  queue.pop(); stats.bad--; stats.ok++; lastOk = true; countDay(lastBox === 1);
   if (lastW) P.w[id] = lastW; else delete P.w[id];
   promote(id, lastBox, lastFirst, t);
   save();
@@ -454,7 +475,13 @@ function finish(early){
   $("prog").style.width = early ? $("prog").style.width : "100%";
   $("left").textContent = "";
   const learned = new Set([...seen].filter(id => !queue.includes(id))).size;
-  $("doneText").textContent = "Вспомнили сегодня: " + wordsN(learned) + "." + (queue.length ? " Осталось на потом: " + wordsN(new Set(queue).size) + "." : " Завтра повторим их ещё раз.");
+  const c = counts(), y = (P.y && P.y[0] === today()) ? P.y : [0, 0, 0], sn = streakNow(), best = (P.s && P.s[2]) || 0;
+  $("doneStreak").textContent = sn ? "🔥 " + daysN(sn) + " подряд" + (sn > 1 && sn >= best ? " — это рекорд!" : "") : "";
+  $("doneStreak").hidden = !sn;
+  const rows = [["Вспомнили сегодня", y[1]], ["Из них новых", y[2]], ["Всего выучено слов", c[2] + c[3] + c[4] + c[5] + c[6] + c[7]], ["В банке 7 (90 дней)", c[7]], ["Ещё не учили", c[1]]];
+  $("doneSum").innerHTML = "";
+  rows.forEach(r => { const d = document.createElement("div"), a = document.createElement("span"), b = document.createElement("b"); a.textContent = r[0]; b.textContent = r[1]; d.append(a, b); $("doneSum").appendChild(d); });
+  $("doneText").textContent = queue.length ? "Осталось на потом: " + wordsN(new Set(queue).size) + "." : "Завтра повторим слова ещё раз.";
   queue = []; cur = null; dirty = dirty || cloud; flush();
   $("toHome").focus();
 }
