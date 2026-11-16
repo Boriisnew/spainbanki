@@ -240,6 +240,8 @@ const PLAYERS = [["darina","Дарина"],["boris","Борис"],["tanya","Та
 const IV = {2:1, 3:3, 4:7, 5:16};
 const SUP = [35, 70, 140];
 const FIRST_DAY_NEW = 20, MAX_DUE = 80;
+/* не больше 60 повторов за одно занятие: длинные занятия утомляют, остальные слова — в следующий раз (самые старые первыми) */
+const MAX_SESSION = 60;
 const JARS = [["Новые","ещё не учили"],["1 день","повтор через день"],["3 дня","повтор через 3 дня"],["7 дней","повтор через неделю"],["16+ дней","закреплённые"]];
 const KIND = {m:"существительное, м. р.",f:"существительное, ж. р.",mf:"существительное",pl:"существительное, мн. ч.",a:"прилагательное",v:"глагол",p:"фраза",d:"наречие / связка",n:"числительное"};
 const PRON = ["yo","tú","él / ella","nosotros","vosotros","ellos"];
@@ -342,9 +344,17 @@ function ivlDays(rec, box){
   if (box === 5 && rec.v >= SUP[0]) base = rec.v;
   return Math.max(1, Math.round(base * P.m * (rec.e >= 3 ? 0.7 : 1)));
 }
-function promote(id){
+/* el — сколько дней слово реально продержалось в памяти (больше обычного, если повтор пропущен).
+   Как в Anki/FSRS: если вы вспомнили слово спустя el дней, следующая пауза не короче el —
+   слово перескакивает банки, паузы которых уже «проверены». */
+function promote(id, el){
   const r = P.w[id];
   if (r.b < 5) { r.b++; r.v = 0; } else r.v = r.v >= SUP[0] ? Math.min(SUP[2], r.v * 2) : SUP[0];
+  if (el) {
+    while (r.b < 5 && IV[r.b] <= el) r.b++;
+    if (r.b === 5 && !r.v && IV[5] <= el) r.v = SUP[0];
+    while (r.b === 5 && r.v && r.v < SUP[2] && r.v <= el) r.v = Math.min(SUP[2], r.v * 2);
+  }
   r.l = 0; r.d = today() + ivlDays(r, r.b);
 }
 function demote(id, steps){
@@ -429,7 +439,7 @@ function render(){
     const next = Object.values(P.w).map(v => v.d).filter(d => d > t).sort((a, b) => a - b)[0];
     txt = "На сегодня всё сделано." + (next ? " Следующее повторение — " + dn(next - t) + "." : "");
   } else {
-    txt = (rev ? "Повторить: " + wordsN(rev) + ". " : "") + (nw ? "Новых: " + wordsN(nw) + "." : "");
+    txt = (rev ? "Повторить: " + wordsN(rev) + (rev > MAX_SESSION ? " (за одно занятие — " + MAX_SESSION + ", остальные в следующий раз)" : "") + ". " : "") + (nw ? "Новых: " + wordsN(nw) + (rev >= MAX_SESSION ? " — после повторов" : "") + "." : "");
   }
   if (block === "pause") txt += " Новые слова на паузе: сначала закрепим старые.";
   if (block === "load" && !nw) txt += " Новых слов сегодня нет: много повторов.";
@@ -471,7 +481,8 @@ function requeue(id){ const g = 5 + Math.floor(Math.random() * 6); queue.splice(
 function startSession(){
   ensureDay();
   /* сначала просроченные повторы (самые старые первыми), новые слова после них */
-  const rev = shuffle(dueReviews()).sort((a, b) => P.w[a].d - P.w[b].d), pn = pendingNew() || [];
+  const allRev = shuffle(dueReviews()).sort((a, b) => P.w[a].d - P.w[b].d);
+  const rev = allRev.slice(0, MAX_SESSION), pn = allRev.length >= MAX_SESSION ? [] : (pendingNew() || []);
   S = {};
   rev.forEach(id => S[id] = {k:"r", intro:false, n:0, first:null});
   pn.forEach(id => S[id] = {k:"n", intro:true, n:0, first:null});
@@ -570,7 +581,7 @@ function apply(st){
     const first = s.first === null, prev = r.b;
     if (first) {
       s.first = st; snap.hist = addHist(st === "ok");
-      if (st === "ok") promote(id); else if (st === "near") hold(id); else demote(id, r.l ? 2 : 1);
+      if (st === "ok") promote(id, r.d < t ? (t - r.d) + ivlDays(r, r.b) : 0); else if (st === "near") hold(id); else demote(id, r.l ? 2 : 1);
       const q = P.w[id], k = q.d - t;
       if (st === "ok") move = (prev === 5 ? "Закреплено. " : "В банку " + q.b + ". ") + "Повтор " + dn(k) + ".";
       else if (st === "near") move = "Банка " + q.b + " не меняется. Повтор " + dn(k) + ". Спрошу ещё раз в конце.";
