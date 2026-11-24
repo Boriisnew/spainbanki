@@ -93,6 +93,11 @@ mark{background:var(--near-bg);color:var(--near);border-radius:4px;padding:0 2px
 .list div:last-child{border-bottom:0}
 .list div b{color:var(--accent);font-weight:600}
 .status{font-size:16px;color:var(--muted)}
+.perday{display:flex;flex-direction:column;gap:10px;padding-top:4px;border-top:1px solid var(--line)}
+.perday p{font-size:19px;font-weight:600;padding-top:12px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{min-width:58px;min-height:52px;padding:6px 14px;border-radius:14px;border:2px solid var(--line);background:var(--surface);color:var(--ink);font-size:21px;font-weight:600}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 /* дни подряд и итог */
 .streak{display:flex;flex-direction:column;gap:2px;font-size:24px;font-weight:700;background:var(--sun-bg);color:var(--sun-ink);border-radius:16px;padding:12px 16px}
 .streak small{display:block;font-size:17px;font-weight:400;color:var(--sun-ink);opacity:.9}
@@ -157,6 +162,10 @@ body.studying{padding-block:8px 14px}
         <div class="row">
           <button class="btn" id="start">Начать</button>
           <button class="btn ghost" id="more">Ещё 10 новых слов</button>
+        </div>
+        <div class="perday">
+          <p id="perDay"></p>
+          <div class="chips" id="chips" role="group" aria-label="Сколько новых слов в день"></div>
         </div>
         <p class="status" id="status"></p>
       </div>
@@ -256,7 +265,9 @@ const today = () => { const d = new Date(); return Math.floor(Date.UTC(d.getFull
    ae — день последней подстройки, h — история ответов по дням [верно с 1-й попытки, всего],
    sk/sd — серия дней и последний день занятий. Слово: b — банка, d — когда повторить, e — ошибок на повторах,
    l — последний повтор с ошибкой, v — интервал «поддержки». */
-const blank = () => ({w:{}, d:0, nt:[], t:0, n:10, m:1, np:0, ae:0, h:{}, sk:0, sd:0, msg:""});
+const blank = () => ({w:{}, d:0, nt:[], t:0, n:10, m:1, np:0, ae:0, h:{}, sk:0, sd:0, msg:"", un:0});
+/* un — сколько новых слов в день выбрал сам человек; 0 — подбирать автоматически */
+const CHOICES = [0, 5, 10, 15, 20, 30];
 function normP(p){
   const o = Object.assign(blank(), Object.fromEntries(Object.entries(p || {}).filter(([, v]) => v !== undefined && v !== null)));
   const w = {};
@@ -280,14 +291,14 @@ let tgName = "";
 cloud = !!CS;
 const csSet = (k, v) => new Promise((res, rej) => CS.setItem(k, v, e => e ? rej(e) : res()));
 const csGet = keys => new Promise((res, rej) => CS.getItems(keys, (e, v) => e ? rej(e) : res(v || {})));
-const pack = p => JSON.stringify({d:p.d, nt:p.nt, t:p.t, n:p.n, m:p.m, np:p.np, ae:p.ae, sk:p.sk, sd:p.sd, msg:p.msg,
+const pack = p => JSON.stringify({d:p.d, nt:p.nt, t:p.t, n:p.n, m:p.m, np:p.np, ae:p.ae, sk:p.sk, sd:p.sd, msg:p.msg, un:p.un,
   h:Object.entries(p.h).map(([k, v]) => k + ":" + v[0] + ":" + v[1]).join(","),
   w:Object.entries(p.w).map(([k, v]) => [k, v.b, v.d, v.e, v.l, v.v].join(".")).join(",")});
 function unpack(s){
   const o = JSON.parse(s), w = {}, h = {};
   (o.w || "").split(",").forEach(x => { const a = x.split("."); if (a.length >= 3) w[a[0]] = {b:+a[1], d:+a[2], e:+(a[3] || 0), l:+(a[4] || 0), v:+(a[5] || 0)}; });
   (o.h || "").split(",").forEach(x => { const a = x.split(":"); if (a.length === 3) h[a[0]] = [+a[1], +a[2]]; });
-  return normP({w, h, d:o.d, nt:o.nt, t:o.t, n:o.n, m:o.m, np:o.np, ae:o.ae, sk:o.sk, sd:o.sd, msg:o.msg});
+  return normP({w, h, d:o.d, nt:o.nt, t:o.t, n:o.n, m:o.m, np:o.np, ae:o.ae, sk:o.sk, sd:o.sd, msg:o.msg, un:o.un});
 }
 let saveTimer = null, saving = false, dirty = false;
 function save(){
@@ -386,16 +397,21 @@ function adaptCalc(){
     if (pct > 0.95) { r.m = Math.min(1.5, Math.round(r.m * 1.2 * 100) / 100); r.n = Math.min(20, r.n + 3); r.ae = t; r.msg.push("Вы учите быстро (" + shown + " верно): новых слов в день " + r.n + ", повторы реже."); }
     else if (pct < 0.85) { r.n = Math.max(5, r.n - 3); r.ae = t; r.msg.push("Чуть тяжело (" + shown + " верно): новых слов в день " + r.n + "."); }
   }
+  if (P.un) {  /* число новых слов выбрал человек: не меняем его и не ставим паузу, только советуем */
+    r.n = P.un; r.np = 0;
+    r.msg = r.msg.filter(x => !/новы[хе] слов/.test(x));
+    if (pct < 0.85) r.msg.push("Совет: верно " + shown + " — многовато ошибок. Можно выбрать меньше новых слов в день.");
+  }
   return r;
 }
-function blockReason(np){ return today() < np ? "pause" : dueReviews().length > MAX_DUE ? "load" : ""; }
+function blockReason(np){ return P.un ? "" : today() < np ? "pause" : dueReviews().length > MAX_DUE ? "load" : ""; }
 function ensureDay(){
   const t = today(); if (P.d === t) return;
   const r = adaptCalc();
   P.n = r.n; P.m = r.m; P.np = r.np; P.ae = r.ae; P.msg = r.msg.join(" ");
   const first = Object.keys(P.w).length === 0;
   P.d = t; P.nt = [];
-  P.nt = fresh(blockReason(P.np) ? 0 : (first ? FIRST_DAY_NEW : P.n));
+  P.nt = fresh(blockReason(P.np) ? 0 : (first && !P.un ? FIRST_DAY_NEW : P.n));
   save();
 }
 function pendingNew(){ return P.d === today() ? P.nt.filter(id => !P.w[id] && BY[id]) : null; }
@@ -431,9 +447,9 @@ function render(){
   });
   const t = today(), rev = dueReviews().length, pn = pendingNew();
   const pre = pn === null ? adaptCalc() : null, nowN = pre ? pre.n : P.n, nowNp = pre ? pre.np : P.np;
-  const block = t < nowNp ? "pause" : rev > MAX_DUE ? "load" : "";
+  const block = P.un ? "" : t < nowNp ? "pause" : rev > MAX_DUE ? "load" : "";
   const firstEver = Object.keys(P.w).length === 0;
-  const nw = pn === null ? (block ? 0 : Math.min(firstEver ? FIRST_DAY_NEW : nowN, c[1])) : pn.length;
+  const nw = pn === null ? (block ? 0 : Math.min(firstEver && !P.un ? FIRST_DAY_NEW : nowN, c[1])) : pn.length;
   let txt;
   if (rev + nw === 0) {
     const next = Object.values(P.w).map(v => v.d).filter(d => d > t).sort((a, b) => a - b)[0];
@@ -448,13 +464,22 @@ function render(){
   $("msg").hidden = !msg; $("msg").textContent = msg || "";
   const a = acc7(), lines = [];
   if (a.n) lines.push("За 7 дней верно с 1-й попытки: " + Math.round(a.p * 100) + " % (повторов: " + a.n + ").");
-  lines.push("Новых слов в день: " + (firstEver ? FIRST_DAY_NEW : nowN) + ".");
   const sn = (P.sk && P.sd >= t - 1) ? P.sk : 0;
   $("streak").hidden = !sn;
   if (sn) $("streak").innerHTML = "🔥 " + sn + " " + plural(sn, "день", "дня", "дней") + " подряд<small>" + (P.sd === t ? "Сегодня вы уже занимались." : "Позанимайтесь сегодня, чтобы не прервать серию.") + "</small>";
   $("stat").textContent = lines.join("\n");
   $("start").hidden = rev + nw === 0;
-  $("more").hidden = !(pn !== null && !block && c[1] - pn.length > 0);
+  $("more").hidden = c[1] - (pn ? pn.length : 0) <= 0;
+  const daily = P.un || (firstEver ? FIRST_DAY_NEW : nowN);
+  $("perDay").textContent = "Новых слов в день: " + daily + (P.un ? "" : " (подбирается само)");
+  $("chips").innerHTML = "";
+  CHOICES.forEach(v => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "chip" + (P.un === v ? " on" : "");
+    b.textContent = v ? String(v) : "Авто"; b.setAttribute("aria-pressed", P.un === v ? "true" : "false");
+    b.setAttribute("aria-label", v ? v + " новых слов в день" : "Подбирать число новых слов автоматически");
+    b.onclick = () => setDaily(v);
+    $("chips").appendChild(b);
+  });
   showStatus(); show("home");
 }
 
@@ -478,11 +503,19 @@ function openList(box){
 function shuffle(a){ for (let i = a.length - 1; i > 0; i--){ const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 /* слово вернётся через 5-10 других карточек (или в конец, если очередь короче) */
 function requeue(id){ const g = 5 + Math.floor(Math.random() * 6); queue.splice(Math.min(queue.length, g), 0, id); }
-function startSession(){
+function setDaily(v){
+  ensureDay();
+  P.un = v; if (v) { P.n = v; P.np = 0; }
+  const want = v || P.n, have = P.nt.filter(id => BY[id]).length;
+  if (want > have) P.nt = P.nt.concat(fresh(want - have));
+  else if (v && want < have) { let k = 0; P.nt = P.nt.filter(id => P.w[id] || k++ < want); }
+  save(); render();
+}
+function startSession(onlyNew){
   ensureDay();
   /* сначала просроченные повторы (самые старые первыми), новые слова после них */
   const allRev = shuffle(dueReviews()).sort((a, b) => P.w[a].d - P.w[b].d);
-  const rev = allRev.slice(0, MAX_SESSION), pn = allRev.length >= MAX_SESSION ? [] : (pendingNew() || []);
+  const rev = onlyNew ? [] : allRev.slice(0, MAX_SESSION), pn = (!onlyNew && allRev.length >= MAX_SESSION) ? [] : (pendingNew() || []);
   S = {};
   rev.forEach(id => S[id] = {k:"r", intro:false, n:0, first:null});
   pn.forEach(id => S[id] = {k:"n", intro:true, n:0, first:null});
@@ -687,8 +720,8 @@ PLAYERS.forEach(([k, name]) => {
   $("names").appendChild(b);
 });
 $("switch").onclick = () => { flush(); who = null; show("pick"); };
-$("start").onclick = startSession;
-$("more").onclick = () => { ensureDay(); if (blockReason(P.np)) return; P.nt = P.nt.concat(fresh(10)); save(); startSession(); };
+$("more").onclick = () => { ensureDay(); P.nt = P.nt.concat(fresh(10)); save(); startSession(true); };
+$("start").onclick = () => startSession();
 $("stop").onclick = () => finish(true);
 $("form").addEventListener("submit", e => { e.preventDefault(); if ($("ans").value.trim()) check($("ans").value, false); else $("ans").focus(); });
 $("dunno").onclick = () => check("", true);
